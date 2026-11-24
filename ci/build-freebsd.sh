@@ -1,15 +1,19 @@
+
 #!/bin/sh
 set -eu
 
-# Build fd using its existing Makefile
-gmake
+# Require an exact upstream release tag
+TAG=$(git describe --tags --exact-match \
+    --match 'v[0-9]*')
 
-# Verify the resulting executable
+# Build and smoke-test
+gmake
 test -x target/release/fd
 ./target/release/fd --version
 
-# Package the FreeBSD binary
+# Package
 mkdir -p dist
-tar -czf dist/fd-freebsd-amd64.tar.gz \
+tar -czf \
+    "dist/fd-${TAG}-x86_64-unknown-freebsd.tar.gz" \
     -C target/release fd
 

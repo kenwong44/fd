@@ -1,35 +1,127 @@
-name: FreeBSD Build
+
+name: FreeBSD Release Builds
 
 on:
-  push:
+  schedule:
+    - cron: "23 7 * * *"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional upstream release tag"
+        required: false
+        type: string
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: freebsd-releases
+  cancel-in-progress: false
 
 jobs:
-  build:
+  discover:
     runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.find.outputs.tags }}
 
     steps:
-      - name: Checkout source
+      - name: Find unbuilt releases
+        id: find
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$REQUESTED_TAG" ]]; then
+            releases="$REQUESTED_TAG"
+          else
+            releases=$(gh api --paginate \
+              'repos/sharkdp/fd/releases?per_page=100' \
+              --jq '.[] |
+                select(.draft == false and
+                       .prerelease == false and
+                       .published_at >= "2026-11-24T00:00:00Z") |
+                .tag_name')
+          fi
+
+          pending='[]'
+
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+
+            if gh release view "freebsd-$tag" \
+              -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Already published: $tag"
+              continue
+            fi
+
+            pending=$(jq -nc \
+              --argjson current "$pending" \
+              --arg tag "$tag" \
+              '$current + [$tag]')
+          done <<< "$releases"
+
+          echo "tags=$pending" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: discover
+    if: ${{ needs.discover.outputs.tags != '[]' }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        tag: ${{ fromJSON(needs.discover.outputs.tags) }}
+
+    steps:
+      - name: Checkout your CI scripts
         uses: actions/checkout@v4
+        with:
+          path: ci-fork
+          persist-credentials: false
+
+      - name: Checkout exact upstream release
+        uses: actions/checkout@v4
+        with:
+          repository: sharkdp/fd
+          ref: ${{ matrix.tag }}
+          fetch-depth: 0
+          path: fd-source
+          persist-credentials: false
 
       - name: Build on FreeBSD
         uses: vmactions/freebsd-vm@v1
         with:
-          release: "14"
+          release: "14.4"
           arch: x86_64
           sync: rsync
           prepare: |
             pkg install -y rust gmake
           run: |
-            sh ci/build-freebsd.sh
+            cd fd-source
+            sh ../ci-fork/ci/build-freebsd.sh
 
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: fd-freebsd-amd64
-          path: dist/fd-freebsd-amd64.tar.gz
-          if-no-files-found: error
+      - name: Publish unofficial FreeBSD release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          set -euo pipefail
+
+          SHA=$(git -C fd-source rev-parse HEAD)
+
+          printf \
+            'Unofficial FreeBSD amd64 build of fd %s.\nUpstream release: https://github.com/sharkdp/fd/releases/tag/%s\nSource commit: %s\nBuild on FreeBSD 14.4; full tests not run.\n' \
+            "$TAG" "$TAG" "$SHA" > notes.txt
+
+          gh release create "freebsd-$TAG" \
+            "fd-source/dist/fd-${TAG}-x86_64-unknown-freebsd.tar.gz" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "fd $TAG - unofficial FreeBSD build" \
+            --notes-file notes.txt \
+            --latest=false
 
