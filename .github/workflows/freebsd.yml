@@ -102,7 +102,7 @@ jobs:
             pkg install -y rust gmake
           run: |
             cd fd-source
-            sh ../ci-fork/ci/build-freebsd.sh
+            sh ../ci-fork/ci/build-freebsd.sh "${{ matrix.tag }}"
 
       - name: Publish unofficial FreeBSD release
         env:
