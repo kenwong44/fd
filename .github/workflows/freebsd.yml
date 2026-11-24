@@ -1,0 +1,35 @@
+name: FreeBSD Build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14"
+          arch: x86_64
+          sync: rsync
+          prepare: |
+            pkg install -y rust gmake
+          run: |
+            sh ci/build-freebsd.sh
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: fd-freebsd-amd64
+          path: dist/fd-freebsd-amd64.tar.gz
+          if-no-files-found: error
+
